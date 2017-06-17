@@ -72,22 +72,30 @@ func (c *Client) newRequest(ctx context.Context, method, spath string, values ur
 
 	req = req.WithContext(ctx)
 
-	if c.APIKey != "" && c.APISecret != "" {
-		c.setAuthHeader(method, u.Path, body, req)
-	}
-
 	return req, nil
 }
 
-func (c *Client) setAuthHeader(method, path string, body io.Reader, req *http.Request) {
+func (c *Client) newPrivateRequest(ctx context.Context, method, spath string, values url.Values, body io.Reader) (*http.Request, error) {
+	req, err := c.newRequest(ctx, method, spath, values, body)
+	if err != nil {
+		return nil, err
+	}
+
+	var bodyText string
+	if body != nil {
+		bodyBytes, _ := ioutil.ReadAll(body)
+		bodyText = string(bodyBytes)
+	} else {
+		bodyText = ""
+	}
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	bodyBytes, _ := ioutil.ReadAll(body)
-	text := timestamp + method + path + string(bodyBytes)
-	sign := c.createHMAC(text, c.APISecret)
+	sign := c.createHMAC(timestamp+method+path.Join(c.URL.Path, spath)+bodyText, c.APISecret)
 	req.Header.Set("ACCESS-KEY", c.APIKey)
 	req.Header.Set("ACCESS-TIMESTAMP", timestamp)
 	req.Header.Set("ACCESS-SIGN", sign)
 	req.Header.Set("Content-Type", "application/json")
+
+	return req, nil
 }
 
 func (c *Client) createHMAC(msg, key string) string {
@@ -96,16 +104,43 @@ func (c *Client) createHMAC(msg, key string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (c *Client) getResponse(req *http.Request) (*http.Response, error) {
+func (c *Client) getResponse(req *http.Request, data interface{}) error {
 	res, err := c.HTTPClient.Do(req)
+	defer res.Body.Close()
 	if err != nil {
-		return nil, err
+		return err
 	} else if res.StatusCode != http.StatusOK {
-		return nil, errors.New(fmt.Sprintf("status code: %d", res.StatusCode))
+		return errors.New(fmt.Sprintf("status code: %d", res.StatusCode))
 	}
 
-	return res, nil
+	if data != nil {
+		dec := json.NewDecoder(res.Body)
+		return dec.Decode(data)
+	} else {
+		return nil
+	}
 }
+
+/*
+func (c *Client) reqAPI(ctx context.Context, private bool, method, spath string, values url.Values, body io.Reader, data interface{}) error {
+	var req *http.Request
+	var err error
+	if private {
+		req, err = c.newPrivateRequest(ctx, method, spath, values, body)
+	} else {
+		req, err = c.newRequest(ctx, method, spath, values, body)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err = c.getResponse(req, &data); err != nil {
+		return err
+	}
+
+	return nil
+}
+*/
 
 // * HTTP Public API
 // ** マーケットの一覧
@@ -120,14 +155,8 @@ func (c *Client) GetMarkets(ctx context.Context) (*Markets, error) {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Markets
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -137,7 +166,7 @@ func (c *Client) GetMarkets(ctx context.Context) (*Markets, error) {
 // ** 板情報
 type Board struct {
 	MidPrice float64 `json:"mid_price"`
-	Bids []struct {
+	Bids     []struct {
 		Price float64 `json:"price"`
 		Size  float64 `json:"size"`
 	} `json:"bids"`
@@ -152,19 +181,14 @@ func (c *Client) GetBoard(ctx context.Context, productCode string) (*Board, erro
 	if productCode != "" {
 		v.Set("product_code", productCode)
 	}
+
 	req, err := c.newRequest(ctx, "GET", "board", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Board
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -197,14 +221,8 @@ func (c *Client) GetTicker(ctx context.Context, productCode string) (*Ticker, er
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Ticker
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -238,14 +256,8 @@ func (c *Client) GetExecutions(ctx context.Context, productCode string, page *Pa
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Executions
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -263,14 +275,8 @@ func (c *Client) GetHealth(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Status
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -294,14 +300,8 @@ func (c *Client) GetChats(ctx context.Context, fromDate string) (*Chats, error) 
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Chats
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -314,19 +314,13 @@ func (c *Client) GetChats(ctx context.Context, fromDate string) (*Chats, error) 
 type Permissions []string
 
 func (c *Client) GetMyPermissions(ctx context.Context) (*Permissions, error) {
-	req, err := c.newRequest(ctx, "GET", "me/getpermissions", nil, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getpermissions", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Permissions
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -342,19 +336,13 @@ type Balance []struct {
 }
 
 func (c *Client) GetMyBalance(ctx context.Context) (*Balance, error) {
-	req, err := c.newRequest(ctx, "GET", "me/getbalance", nil, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getbalance", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Balance
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -370,19 +358,13 @@ type Collateral struct {
 }
 
 func (c *Client) GetMyCollateral(ctx context.Context) (*Collateral, error) {
-	req, err := c.newRequest(ctx, "GET", "me/getcollateral", nil, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getcollateral", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Collateral
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -398,19 +380,13 @@ type Address []struct {
 }
 
 func (c *Client) GetMyAddress(ctx context.Context) (*Address, error) {
-	req, err := c.newRequest(ctx, "GET", "me/getaddress", nil, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getaddress", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Address
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -434,19 +410,13 @@ func (c *Client) GetMyCoinins(ctx context.Context, page *Page) (*Coinins, error)
 	if page != nil {
 		page.setPage(v)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getcoinins", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getcoinins", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Coinins
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -475,19 +445,13 @@ func (c *Client) GetMyCoinouts(ctx context.Context, page *Page, messageID string
 	if messageID != "" {
 		v.Set("message_id", messageID)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getcoinouts", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getcoinouts", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Coinouts
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -506,19 +470,13 @@ type BankAccounts []struct {
 }
 
 func (c *Client) GetMyBankAccounts(ctx context.Context) (*BankAccounts, error) {
-	req, err := c.newRequest(ctx, "GET", "me/getcoinins", nil, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getcoinins", nil, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data BankAccounts
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -540,19 +498,13 @@ func (c *Client) GetMyDeposits(ctx context.Context, page *Page) (*Deposits, erro
 	if page != nil {
 		page.setPage(v)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getdeposits", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getdeposits", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Deposits
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -578,19 +530,13 @@ func (c *Client) Withdraw(ctx context.Context, wd *Withdraw) (*WithdrawResponse,
 	if err != nil {
 		return nil, err
 	}
-	req, err := c.newRequest(ctx, "POST", "me/withdraw", nil, bytes.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/withdraw", nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data WithdrawResponse
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -615,19 +561,13 @@ func (c *Client) GetMyWithdrawals(ctx context.Context, page *Page, messageID str
 	if messageID != "" {
 		v.Set("message_id", messageID)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getwithdrawals", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getwithdrawals", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Withdrawals
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -656,19 +596,13 @@ func (c *Client) SendChildorder(ctx context.Context, ch *Childorder) (*ChildOrde
 	if err != nil {
 		return nil, err
 	}
-	req, err := c.newRequest(ctx, "POST", "me/sendchildorder", nil, bytes.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/sendchildorder", nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data ChildOrderAcceptanceID
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -681,12 +615,12 @@ func (c *Client) CancelChildorder(ctx context.Context, ch *Childorder) error {
 	if err != nil {
 		return err
 	}
-	req, err := c.newRequest(ctx, "POST", "me/cancelchildorder", nil, bytes.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/cancelchildorder", nil, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 
-	_, err = c.getResponse(req)
+	err = c.getResponse(req, nil)
 
 	return err
 }
@@ -718,19 +652,13 @@ func (c *Client) SendParentrder(ctx context.Context, pa *Parentorder) (*ParentOr
 	if err != nil {
 		return nil, err
 	}
-	req, err := c.newRequest(ctx, "POST", "me/sendparentorder", nil, bytes.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/sendparentorder", nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data ParentOrderAcceptanceID
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -743,12 +671,12 @@ func (c *Client) CancelParentorder(ctx context.Context, pa *Parentorder) error {
 	if err != nil {
 		return err
 	}
-	req, err := c.newRequest(ctx, "POST", "me/cancelparentorder", nil, bytes.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/cancelparentorder", nil, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 
-	_, err = c.getResponse(req)
+	err = c.getResponse(req, nil)
 
 	return err
 }
@@ -756,12 +684,12 @@ func (c *Client) CancelParentorder(ctx context.Context, pa *Parentorder) error {
 // *** すべての注文をキャンセルする
 func (c *Client) CancelAllChildorder(ctx context.Context, productCode string) error {
 	body := `{"product_code": "' + productCode + '"}`
-	req, err := c.newRequest(ctx, "POST", "me/cancelallchildorder", nil, strings.NewReader(body))
+	req, err := c.newPrivateRequest(ctx, "POST", "me/cancelallchildorder", nil, strings.NewReader(body))
 	if err != nil {
 		return err
 	}
 
-	_, err = c.getResponse(req)
+	err = c.getResponse(req, nil)
 
 	return err
 }
@@ -800,19 +728,13 @@ func (c *Client) GetMyChildorders(ctx context.Context, productCode string, page 
 	if parentOrderID != "" {
 		v.Set("parent_order_id", parentOrderID)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getchildorders", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getchildorders", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Childorders
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -850,19 +772,13 @@ func (c *Client) GetMyParentorders(ctx context.Context, productCode string, page
 	if parentOrderState != "" {
 		v.Set("parent_order_state", parentOrderState)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getparentorders", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getparentorders", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Parentorders
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -898,19 +814,13 @@ func (c *Client) GetMyParentorder(ctx context.Context, parentOrderID, parentOrde
 	} else {
 		return nil, errors.New("nothing parameter")
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getparentorder", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getparentorder", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Parentorders
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -945,19 +855,13 @@ func (c *Client) GetMyExecutions(ctx context.Context, productCode string, page *
 	if childOrderAcceptanceID != "" {
 		v.Set("child_order_acceptance_id", childOrderAcceptanceID)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getexecutions", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getexecutions", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Executions
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -983,19 +887,13 @@ func (c *Client) GetMyPositions(ctx context.Context, productCode string) (*Posit
 	if productCode != "" {
 		v.Set("product_code", productCode)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/getpositions", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/getpositions", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data Positions
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
@@ -1012,19 +910,13 @@ func (c *Client) GetMyTradingCommission(ctx context.Context, productCode string)
 	if productCode != "" {
 		v.Set("product_code", productCode)
 	}
-	req, err := c.newRequest(ctx, "GET", "me/gettradingcommission", v, nil)
+	req, err := c.newPrivateRequest(ctx, "GET", "me/gettradingcommission", v, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := c.getResponse(req)
-	if err != nil {
-		return nil, err
-	}
-
-	dec := json.NewDecoder(res.Body)
 	var data TradingCommission
-	if err := dec.Decode(&data); err != nil {
+	if err := c.getResponse(req, &data); err != nil {
 		return nil, err
 	}
 
